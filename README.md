@@ -28,8 +28,8 @@ Instance an log analyzer.
 
 - separator - The separator of each logs, defaults to `\n`.
 - placeholder - The placeholder of empty fields, defaults to `-`.
-- encoding - The encoding of the analyzing file, defaults to 'utf-8'.
-- ignoreMismatches - If true, ignore mismatched logs.
+- encoding - The encoding of the analyzing file, defaults to `utf-8``.
+- ignoreMismatches - If true, ignore mismatched logs, defaults to `false`.
 
 ### analyzer.token(name, [pattern], [type])
 
