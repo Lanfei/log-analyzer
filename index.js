@@ -72,6 +72,10 @@
 	}
 
 	function statAccessLogs(logs) {
+		var firstUrl = logs && logs[0] && logs[0]['url'];
+		if (!firstUrl) {
+			return;
+		}
 		var totalRequests = logs.length,
 			abortedRequests = 0,
 			failedRequests = 0,
@@ -123,7 +127,7 @@
 
 		this.logs = [];
 		this.fields = [];
-		this.groups = [];
+		this.groups = {};
 		this.requests = [];
 		this.logFormat = format || '';
 		this.overviews = [statAccessLogs];
@@ -135,6 +139,18 @@
 		this._callback = null;
 		this._hasError = false;
 	}
+
+	/**
+	 * Returns the pattern of path
+	 * @param  {String} path
+	 * @return {RegExp}
+	 */
+	Analyzer.getPathPattern = function (path) {
+		return new RegExp('^' +
+			path.replace(SPECIAL_RE, '\\$1')
+				.replace(PARAM_RE, '[^\/]+')
+		);
+	};
 
 	/**
 	 * Define a token to match the log field.
@@ -198,15 +214,16 @@
 	/**
 	 * Adds a analysis group.
 	 * @method Analyzer#group
-	 * @param  {String}   field
-	 * @param  {Function} [filter]
-	 * @return {Analyzer} this
+	 * @param  {String}          name
+	 * @param  {String|Function} [groupBy]
+	 * @param  {Function}        [calculator]
+	 * @return {Analyzer}        this
 	 */
-	Analyzer.prototype.group = function (field, filter) {
-		this.groups.push({
-			field: field,
-			filter: filter
-		});
+	Analyzer.prototype.group = function (name, groupBy, calculator) {
+		this.groups[name] = {
+			groupBy: groupBy,
+			calculator: calculator
+		};
 		return this;
 	};
 
@@ -237,6 +254,18 @@
 		return result;
 	};
 
+	Analyzer.prototype.filter = function (callback) {
+		var logs = this.logs,
+			filteredLogs = [];
+		for (var i = 0, l = logs.length; i < l; ++i) {
+			var log = logs[i];
+			var filtered = callback(log);
+			if (filtered) {
+				filteredLogs.push(filtered);
+			}
+		}
+	};
+
 	/**
 	 * Start analyze with logs.
 	 * @method Analyzer#analyze
@@ -258,10 +287,10 @@
 		var requests = this.requests;
 		result['overall'] = this._analyzeRequests('', /.*/);
 		for (var i = 0, l = requests.length; i < l; ++i) {
-			var request = requests[i];
-			var method = request['method'].toUpperCase();
-			var path = request['path'];
-			var key = (method ? method + ' ' : '') + path;
+			var request = requests[i],
+				method = request['method'].toUpperCase(),
+				path = request['path'],
+				key = (method ? method + ' ' : '') + path;
 			result[key] = this._analyzeRequests(method, path);
 		}
 		return result;
@@ -289,8 +318,8 @@
 			if (self._hasError) {
 				return;
 			}
-			var data = cache + chunk.toString();
-			var logs = data.split(self.separator);
+			var data = cache + chunk.toString(),
+				logs = data.split(self.separator);
 			if (logs[logs.length - 1]) {
 				cache = logs.pop();
 			} else {
@@ -317,19 +346,23 @@
 	};
 
 	Analyzer.prototype._parseFormat = function () {
-		var self = this;
-		var fields = this.fields;
-		var format = this.logFormat;
-		var placeholder = this.placeholder;
+		var self = this,
+			fields = this.fields,
+			format = this.logFormat,
+			placeholder = this.placeholder;
+
 		var source = format.replace(TOKEN_RE, function (_, before, field, after) {
 			field = field.slice(1);
 			fields.push(field);
-			var token = self.tokens[field];
-			var pattern = token && token['pattern'] || /[^ ]+/;
-			var source = pattern.source || pattern;
+
+			var token = self.tokens[field],
+				pattern = token && token['pattern'] || /[^ ]+/,
+				source = pattern.source || pattern;
+
 			before = before.replace(SPECIAL_RE, '\\$1');
 			field = '(' + source.replace(GROUP_RE, '$1(?:') + '|' + placeholder + ')';
 			after = after.replace(SPECIAL_RE, '\\$1');
+
 			return before + field + after;
 		});
 		this._pattern = new RegExp('^' + source + '$', 'i');
@@ -342,10 +375,10 @@
 		log.replace(this._pattern, function () {
 			result = {};
 			for (var i = 0, l = fields.length; i < l; ++i) {
-				var field = fields[i];
-				var token = tokens[field];
-				var type = token && token['type'];
-				var value = arguments[i + 1];
+				var field = fields[i],
+					token = tokens[field],
+					type = token && token['type'],
+					value = arguments[i + 1];
 				if (type === Number) {
 					value = parseFloat(value);
 				} else if (type === Date) {
@@ -362,10 +395,7 @@
 		if (path instanceof RegExp) {
 			pattern = path;
 		} else {
-			pattern = new RegExp('^' +
-				path.replace(SPECIAL_RE, '\\$1')
-					.replace(PARAM_RE, '[^\/]+')
-			);
+			pattern = Analyzer.getPathPattern(path);
 		}
 
 		var logs = this.logs,
@@ -377,11 +407,9 @@
 			}
 		}
 
-		var overview = this._analyzeOverview(matchedLogs);
-		var groups = this._analyzeGroups(matchedLogs);
 		return {
-			overview: overview,
-			groups: groups
+			overview: this._analyzeOverview(matchedLogs),
+			groups: this._analyzeGroups(matchedLogs)
 		};
 	};
 
@@ -395,24 +423,49 @@
 	};
 
 	Analyzer.prototype._analyzeGroups = function (logs) {
-		var results = {},
-			groups = this.groups;
-		for (var i = 0, l = groups.length; i < l; ++i) {
-			var result = {};
-			var group = groups[i];
-			var field = group['field'];
-			var filter = group['filter'];
-			for (var j = 0, m = logs.length; j < m; ++j) {
-				var key;
+		var i, j, l, m,
+			results = {},
+			groups = this.groups,
+			placeholder = this.placeholder,
+			names = Object.keys(groups);
+		for (i = 0, l = names.length; i < l; ++i) {
+			var key,
+				result = {},
+				logGroups = {},
+				name = names[i],
+				group = groups[name],
+				groupBy = group['groupBy'] || name,
+				calculator = group['calculator'];
+
+			for (j = 0, m = logs.length; j < m; ++j) {
 				var log = logs[j];
-				if (filter) {
-					key = filter(log);
+				if (typeof groupBy === 'function') {
+					key = groupBy.call(this, log);
 				} else {
-					key = log[field];
+					key = log[groupBy];
 				}
-				result[key] = (result[key] || 0) + 1;
+				if (!key && key !== 0) {
+					key = placeholder;
+				}
+
+				if (calculator) {
+					logGroups[key] = logGroups[key] || [];
+					logGroups[key].push(log);
+				} else {
+					result[key] = result[key] || 0;
+					result[key] += 1;
+				}
 			}
-			results[field] = result;
+
+			if (calculator) {
+				var keys = Object.keys(logGroups);
+				for (j = 0, m = keys.length; j < m; ++j) {
+					key = keys[j];
+					result[key] = calculator.call(this, logGroups[key]);
+				}
+			}
+
+			results[name] = result;
 		}
 		return results;
 	};

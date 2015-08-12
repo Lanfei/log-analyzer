@@ -50,10 +50,11 @@ Define a token to match the log field.
 | http-version   | /\d\.\d/          | Number |
 | user-agent     | /.*/              | String |
 | content-length | /\d+/             | Number |
+| *#default#*    | /[^ ]+/           | String |
 
 ### analyzer.format(format)
 
-Set up the log format.
+Set up the log format, if the `token` in `format` is not matched, then use the default `pattern` and `type`.
 
 **Example:**
 
@@ -76,9 +77,9 @@ analyzer.use('GET', '/user/:name');
 analyzer.use('POST', /\/search?q=.*/);
 ```
 
-### analyzer.overview(fn)
+### analyzer.overview(callback)
 
-Adds a callback to analyze overview data.
+Adds a callback to analyze overview data, `callback` gets one argument `(logs)` where `logs` is an array of log objects.
 
 **Example:**
 
@@ -97,21 +98,43 @@ analyzer.overview(function (logs) {
 });
 ```
 
-### analyzer.group(field, [filter])
+### analyzer.group(name, [groupBy], [calculator])
 
-Adds a analysis group, the analyzer will caculate the number of each item group by the field or the return value of the filter.
+Adds a analysis group.
+
+If `groupBy` is a string, analyzer will group by the field value, if it is a function, analyzer will group by the return value of it.
+
+The `calculator` callback gets one argument `(logs)` where logs is an array of grouping logs.
 
 **Example:**
 
 ```js
+// Group by the `method` field
 analyzer.group('method');
-analyzer.group('hour', function (log) {
+
+// Group by the hour
+analyzer.group('requestsPerHour', function (log) {
 	var date = log['datetime'];
 	if (date) {
 		return date.getHour();
 	} else {
 		return '-';
 	}
+});
+
+// Calculate the band width per hour
+analyzer.group('bandWidthPerHour', function (log) {
+	return log['datetime'].getHours();
+}, function (logs) {
+	var result = 0;
+	for (var i = 0, l = logs.length; i < l; ++i) {
+		var log = logs[i],
+			contentLength = log['content-length'];
+		if (contentLength) {
+			result += contentLength;
+		}
+	}
+	return result;
 });
 ```
 
@@ -125,7 +148,7 @@ Returns the analytics result of the logs.
 
 ### analyzer.analyzeFile(filename, callback)
 
-Analyze the provided log file, the callback gets two arguments (err, result).
+Analyze the provided log file, the `callback` gets two arguments `(err, result)`.
 
 ```js
 analyzer.analyzeFile('access.log', function (err, result) {
